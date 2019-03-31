@@ -19,11 +19,10 @@ credentials = service_account.Credentials.from_service_account_file('client_secr
 service = discovery.build('sheets', 'v4', credentials=credentials)
 sheet = service.spreadsheets()
 
-lecture_sheet_id = '1dT6zjPy2Pq8xLGfW8b3jdVgoOQZO-BLNWRd1qdOczCA' #Id of spreadsheet for available times and found lectures
-lectures_range = "'Found lectures'!A:AI"
-time_sheet_id = '1xrqm0JCq6h7Ah7FpES-BXIUhPjJ2Wz9nZx4hKCrKHRw'
+lectures_sheet_id = '1dT6zjPy2Pq8xLGfW8b3jdVgoOQZO-BLNWRd1qdOczCA' #Id of spreadsheet for available times and found lectures
+lectures_range = "'Found lectures'!A2:AI"
+times_sheet_id = '1xrqm0JCq6h7Ah7FpES-BXIUhPjJ2Wz9nZx4hKCrKHRw'
 times_range = "'Merili - Free time'!1:150" #"'Free times'!1:100"
-
 
 session = requests_cache.CachedSession("ois_cache", allowable_methods=('GET', 'POST'))
 
@@ -104,20 +103,23 @@ def GetAvailablePeople(week, day, time, duration):
                         break
     return availables
 
-with open('times.csv', encoding='utf-8') as csv_file:
-    times_table = list(csv.reader(csv_file, delimiter=','))
-    for i in range(0, len(times_table)):
-        if times_table[i][0].startswith("Week "):
-            week = int(times_table[i][0][5:])
-            print("Week " + str(week))
-            available_times[week] = {}
-            for day in range(1,6):
-                schedule_day = {}
-                for person_id in range(1,5):
-                    schedule_day[times_table[i][person_id]] = ParseTimeRanges(times_table[i+day][person_id])
-                available_times[week][day] = schedule_day
+#with open('times.csv', encoding='utf-8') as csv_file:
+#    times_table = list(csv.reader(csv_file, delimiter=','))
+times_table = sheet.values().get(spreadsheetId=times_sheet_id, range=times_range).execute().get('values', [])
+current_week = int(times_table[1][0])
+for i in range(0, len(times_table)):
+    if len(times_table[i]) > 0 and times_table[i][0].startswith("Week "):
+        week = int(times_table[i][0][5:])
+        print("Week " + str(week))
+        available_times[week] = {}
+        for day in range(1,6):
+            schedule_day = {}
+            for person_id in range(1,5):
+                schedule_day[times_table[i][person_id]] = ParseTimeRanges(times_table[i+day][person_id] if len(times_table[i+day]) > person_id else "")
+            available_times[week][day] = schedule_day
 
 print("Constructed table of available times")
+print("Current week:", str(current_week))
 
 #Graceful exit setup
 is_finished = False
@@ -136,10 +138,13 @@ def ProcessPlans():
     try:
         with open('continue_data.json') as json_file:
             lectures = json.load(json_file)
-            start_id = lectures.pop('[LAST]')
+            start_id = lectures.pop('[LAST]', '!!!')
             print("Loaded continue data")
+            #if start_id == '!!!':
+            #    print("No last plan stored, assuming processing finished")
     except FileNotFoundError:
         print("No continue data found")
+    print("")
 
     processing_start_time = datetime.datetime.utcnow()
 
@@ -221,12 +226,33 @@ def ProcessPlans():
                             lectures[lecture_week_uuid].append(timetable_url)
 
     processing_end_time = datetime.datetime.utcnow()
+    print("")
     print("Plans processed in " + str(round((processing_end_time - processing_start_time).total_seconds() / 60, 2)) + " minutes")
     is_finished = True
 
 ProcessPlans()
 
-print("")
+with open('continue_data.json', mode='w') as json_file_out:
+    json.dump(lectures, json_file_out)
+    print("Written continue data to continue_data.json")
+
+#with open('lecture_out.csv', mode='w', newline='', encoding='utf-8') as csv_file_out:
+    #csv_writer = csv.writer(csv_file_out, delimiter='\t', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+
+    #if csv_file_out.tell() == 0:
+    #csv_writer.writerow(["Course label", "Course name", "Available members", "Registered", "Groups", "Academic week", "Weekday", "Start time", "Course URL", "Timetable URL", "Curriculum timetable URL"])
+    #for lecture_uuid in sorted(lectures):
+        #if lecture_uuid != '[LAST]':
+            #csv_writer.writerow(lectures[lecture_uuid])
+
+    #print("Output generated as lecture_out.csv")
+
+lectures.pop('[LAST]', None)
+lectures_out = list(lectures.values())
+sheet.values().clear(spreadsheetId=lectures_sheet_id, range=lectures_range).execute()
+sheet.values().update(spreadsheetId=lectures_sheet_id, range=lectures_range, body={'values': lectures_out}, valueInputOption='USER_ENTERED').execute()
+
+print("Output to 'UT Lectures Data' spreadsheet")
 
 if is_finished:
     try:
@@ -234,21 +260,6 @@ if is_finished:
         print("Processing finished. Removed continue data")
     except FileNotFoundError:
         print("Processing finished. No continue data stored")
-else:
-    with open('continue_data.json', mode='w') as json_file_out:
-        json.dump(lectures, json_file_out)
-        print("Written continue data to continue_data.json")
-
-with open('lecture_out.csv', mode='w', newline='', encoding='utf-8') as csv_file_out:
-    csv_writer = csv.writer(csv_file_out, delimiter='\t', quotechar='"', quoting=csv.QUOTE_MINIMAL)
-
-    #if csv_file_out.tell() == 0:
-    csv_writer.writerow(["Course label", "Course name", "Available members", "Registered", "Groups", "Academic week", "Weekday", "Start time", "Course URL", "Timetable URL", "Curriculum timetable URL"])
-    for lecture_uuid in sorted(lectures):
-        if lecture_uuid != '[LAST]':
-            csv_writer.writerow(lectures[lecture_uuid])
-    
-    print("Output generated as lecture_out.csv")
 
 #for time in sorted(lecture_times):
 #    print(time + "\t" + str(lecture_times[time]))
