@@ -1,0 +1,6 @@
+1. Download and install latest Python 3.7 from https://www.python.org/downloads/ (Make sure install launcher is checked)
+2. Run setup.bat to install required libraries
+3. Run run.bat to find lectures, using data from spreadsheet
+4. The lesson plans are stored in ois_cache.sqlite. If you wish to update the lesson plans, delete ois_cache.sqlite
+
+Regarding any problems or suggestions write to juhanoskar.hennoste@aiesec.net
