@@ -94,13 +94,12 @@ def IsAllowedStudyLevel(course_details):
 
 def GetAvailablePeople(week, day, time, duration):
     availables = set()
-    if week in available_times:
-        if day in available_times[week]:
-            for person, freetimes in available_times[week][day].items():
-                for start_time, end_time in freetimes:
-                    if start_time <= time and time + duration <= end_time:
-                        availables.add(person)
-                        break
+    if week >= current_week and week in available_times and day in available_times[week]:
+        for person, freetimes in available_times[week][day].items():
+            for start_time, end_time in freetimes:
+                if start_time <= time and time + duration <= end_time:
+                    availables.add(person)
+                    break
     return availables
 
 #with open('times.csv', encoding='utf-8') as csv_file:
@@ -114,10 +113,11 @@ for i in range(0, len(times_table)):
         available_times[week] = {}
         for day in range(1,6):
             schedule_day = {}
-            for person_id in range(1,5):
+            for person_id in range(1,len(times_table[i])):
                 schedule_day[times_table[i][person_id]] = ParseTimeRanges(times_table[i+day][person_id] if len(times_table[i+day]) > person_id else "")
             available_times[week][day] = schedule_day
 
+#print(available_times)
 print("Constructed table of available times")
 print("Current week:", str(current_week))
 
