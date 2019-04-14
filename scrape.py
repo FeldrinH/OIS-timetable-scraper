@@ -195,7 +195,7 @@ def ProcessPlans():
                 #Get relevant info (registered count, url of timetable, human-readable course label)
                 try:
                     course_info = GetAPI("registrations/courses/" + version_uuid)
-                except:
+                except requests.exceptions.HTTPError:
                     #Skip course if unable to get registration data
                     print("ERROR: Missing registration data!")
                     continue
