@@ -21,7 +21,7 @@ service = discovery.build('sheets', 'v4', credentials=credentials)
 sheet = service.spreadsheets()
 
 lectures_sheet_id = '1dT6zjPy2Pq8xLGfW8b3jdVgoOQZO-BLNWRd1qdOczCA' #Id of spreadsheet for available times and found lectures
-lectures_range = "'Found lectures'!A2:AJ"
+lectures_range = "'Found lectures'!A2:AL"
 times_sheet_id = '1xrqm0JCq6h7Ah7FpES-BXIUhPjJ2Wz9nZx4hKCrKHRw'
 times_range = "'Merili - Free time'!1:150" #"'Free times'!1:100"
 
@@ -230,7 +230,7 @@ def ProcessPlans():
                             if len(availables) >= 2:
                                 if IsAllowedLocation(lecture['location'].get('address', "")):
                                     print("Found matching lecture", "\t\t\tWeek " + str(week), "\t" + course_id)
-                                    lectures[lecture_week_uuid] = [course_details['target']['course_main_structural_unit']['code'], course_id, lecture['study_work_type']['et'], course_name, ", ".join(availables), str(registered_count), str(group_count) if group_count > 0 else "-", str(week), str(day), lecture['time']['begin_time'][:-3], course_url, plan_url, timetable_url]
+                                    lectures[lecture_week_uuid] = [course_details['target']['course_main_structural_unit']['code'], course_id, lecture['study_work_type']['et'], course_name, ", ".join(availables), str(registered_count), str(group_count) if group_count > 0 else "-", str(week), str(day), lecture['time']['begin_time'][:-3], lecture['location'].get('address', "-"), course_url, plan_url, timetable_url]
                         else:
                             lectures[lecture_week_uuid].append(timetable_url)
 
