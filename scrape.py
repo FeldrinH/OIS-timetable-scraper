@@ -8,6 +8,8 @@ import httplib2
 import os
 from apiclient import discovery
 from google.oauth2 import service_account
+import asyncio
+import operator
 
 lectures = {}
 lecture_times = {}
@@ -16,16 +18,12 @@ available_times = {}
 blacklisted_lecture_types = {'exam', 'resit', 'test', 'practice', 'e-learning'}
 blacklisted_locations = {'tallinn', 'narva', 'pärnu'}
 
-credentials = service_account.Credentials.from_service_account_file('client_secret.json', scopes=['https://www.googleapis.com/auth/spreadsheets'])
-service = discovery.build('sheets', 'v4', credentials=credentials)
-sheet = service.spreadsheets()
-
 lectures_sheet_id = '1dT6zjPy2Pq8xLGfW8b3jdVgoOQZO-BLNWRd1qdOczCA' #Id of spreadsheet for available times and found lectures
 lectures_range = "'Found lectures'!A2:AL"
-times_sheet_id = '1xrqm0JCq6h7Ah7FpES-BXIUhPjJ2Wz9nZx4hKCrKHRw'
-times_range = "'Merili - Free time'!1:150" #"'Free times'!1:100"
+times_sheet_id = lectures_sheet_id
+times_range = "'Free times'!1:150" #"'Free times'!1:100"
 
-session = requests_cache.CachedSession("ois_cache", allowable_methods=('GET', 'POST'))
+session = requests #requests_cache.CachedSession("ois_cache", allowable_methods=('GET', 'POST'))
 
 #Enable or disable debug info printing (disabling improves performance)
 debug_enabled = False
@@ -34,10 +32,10 @@ def print_debug(*args):
         print(*args)
 
 def SearchPayload(start, take):
-    return {"filter":{"academic_year":"2018","semester":"spring","timetable_type":"1"},"start":start,"take":take}
+    return {"filter":{"academic_year":"2019","semester":"autumn","timetable_type":"1"},"start":start,"take":take}
 
-def GetAPI(url):
-    r = session.get("https://ois2.ut.ee/api/" + url, headers={'Connection':'close'})
+async def GetAPI(url):
+    r = await loop.run_in_executor(None, session.get, "https://ois2.ut.ee/api/" + url)
     r.encoding = 'UTF-8'
     r.raise_for_status()
     return r.json()
@@ -107,6 +105,10 @@ def GetAvailablePeople(week, day, time, duration):
                     break
     return availables
 
+credentials = service_account.Credentials.from_service_account_file('client_secret.json', scopes=['https://www.googleapis.com/auth/spreadsheets'])
+service = discovery.build('sheets', 'v4', credentials=credentials)
+sheet = service.spreadsheets()
+
 #with open('times.csv', encoding='utf-8') as csv_file:
 #    times_table = list(csv.reader(csv_file, delimiter=','))
 times_table = sheet.values().get(spreadsheetId=times_sheet_id, range=times_range).execute().get('values', [])
@@ -128,28 +130,81 @@ print("Current week:", str(current_week))
 
 #Graceful exit setup
 is_finished = False
-do_cleanup = False
-def ProcessKill(signal_number, frame):
-    global do_cleanup
-    do_cleanup = True
-signal.signal(signal.SIGINT, ProcessKill)
 
-#Main lecture data processing function
-def ProcessPlans():
-    global lectures, is_finished
+async def ProcessCourse(course, timetable_url):
+    course_uuid = course['info']['course_uuid']
+    version_uuid = course['info']['course_version_uuid']
+    print_debug("Course", course_uuid, version_uuid)
+    
+    course_details = await GetAPI("courses/" + course_uuid + "/versions/" + version_uuid)
 
-    #Load continue data if it exists
-    start_id = None
+    #Skip course if it is block mode study (sessioonõpe)
+    if course_details['target']['study_type']['code'] == "openuniv":
+        return
+
+    #Skip course if not bachelor's. If no level specified, allow lecture by default
+    if not IsAllowedStudyLevel(course_details):
+        return
+
+    #Get relevant info (registered count, url of timetable, human-readable course label)
     try:
-        with open('continue_data.json') as json_file:
-            lectures = json.load(json_file)
-            start_id = lectures.pop('[LAST]', '!!!')
-            print("Loaded continue data")
-            #if start_id == '!!!':
-            #    print("No last plan stored, assuming processing finished")
-    except FileNotFoundError:
-        print("No continue data found")
-    print("")
+        course_info = await GetAPI("registrations/courses/" + version_uuid)
+    except requests.exceptions.HTTPError as httperror:
+        #Skip course if unable to get registration data
+        if httperror.response.status_code == 404:
+            print("ERROR: Missing registration data!")
+            return
+        else:
+            raise httperror
+    registered_count = course_info['restrictions']['registered_students']
+    group_count = len(course_info['groups']) if 'groups' in course_info else 0
+    plan_url = '=HYPERLINK("https://ois2.ut.ee/#/timetable/course/' + course_uuid + '/' + version_uuid + '","Timetable")'
+    course_url = '=HYPERLINK("https://ois2.ut.ee/#/courses/' + course_uuid + '/version/' + version_uuid + '/details","Course")'
+    course_id = course_info['course']['code']
+    course_name = course_details['title']['et']
+
+    #Find lectures at suitable times for a lecture bash
+    for lecture in course['events']:
+        lecture_uuid = lecture['uuid']
+        print_debug("Lecture", lecture_uuid)
+
+        if 'weekday' not in lecture['time'] or 'begin_time' not in lecture['time'] :
+            print("ERROR: Malformed lecture times!")
+            return
+
+        #Ignore exams and practical lessons
+        if not IsAllowedLectureType(lecture):
+            return
+        
+        day = int(lecture['time']['weekday']['code'])
+        start_time = TimeToFloat(lecture['time']['begin_time'])
+        if IsAllowedLocation(lecture['location'].get('address', "")):
+            IncrementDict(lecture_times, lecture['time']['begin_time']) #Store lecture time for common lecture time statistical purposes
+        for week in GetAcademicWeeks(lecture['time']['academic_weeks']):
+            lecture_week_uuid = lecture_uuid + "_" + str(week)
+            if lecture_week_uuid not in lectures:
+                availables = GetAvailablePeople(week, day, start_time, 0) # -1/12 for 5 minutes before lecture, 0.25 for 15 minutes total (5 before start, 10 minutes during lecture)
+                if len(availables) >= 2:
+                    if IsAllowedLocation(lecture['location'].get('address', "")):
+                        print("Found matching lecture", "\t\t\tWeek " + str(week), "\t" + course_id)
+                        lectures[lecture_week_uuid] = [course_details['target']['course_main_structural_unit']['code'], course_id, lecture['study_work_type']['et'], course_name, ", ".join(availables), str(registered_count), str(group_count) if group_count > 0 else "-", str(week), str(day), lecture['time']['begin_time'][:-3], lecture['location'].get('address', "-"), course_url, plan_url, timetable_url]
+            elif len(lectures[lecture_week_uuid]) < 38:
+                lectures[lecture_week_uuid].append(timetable_url)
+
+async def ProcessTimetable(timetable, pos):
+    timetable_url = '=HYPERLINK("https://ois2.ut.ee/#/timetable/' + timetable['uuid'] + '","' + timetable['info']['title']['et'] + '")'
+
+    #Skip timetable if it has no events
+    if 'course_events' not in timetable:
+        print("ERROR: Empty timetable!")
+    else:
+        await asyncio.wait([ProcessCourse(course, timetable_url) for course in timetable['course_events']])
+
+    print("Processed plan", timetable['uuid'], "\t\t" + str(pos))    
+    
+#Main lecture data processing function
+async def ProcessPlans():
+    global lectures, is_finished
 
     processing_start_time = datetime.datetime.utcnow()
 
@@ -158,92 +213,16 @@ def ProcessPlans():
     for i in range(1,500,chunk_size):
         print("Block search:", i, i+chunk_size-1)
         search = PostAPI("timetable", SearchPayload(i, chunk_size))
-        for offset, timetable in enumerate(search):
-            print("Plan", timetable['uuid'], "\t\t" + str(i + offset))
-            if start_id != None:
-                if timetable['uuid'] == start_id:
-                    print("Found continue location!")
-                    start_id = None
-                else:
-                    continue
-            if do_cleanup:
-                lectures['[LAST]'] = timetable['uuid']
-                print("Continue UUID:", timetable['uuid'])
-                return
-
-            timetable_url = '=HYPERLINK("https://ois2.ut.ee/#/timetable/' + timetable['uuid'] + '","' + timetable['info']['title']['et'] + '")'
-
-            #Skip timetable if it has no events
-            if 'course_events' not in timetable:
-                print("ERROR: Empty timetable!")
-                continue
-            for course in timetable['course_events']:
-                course_uuid = course['info']['course_uuid']
-                version_uuid = course['info']['course_version_uuid']
-                print_debug("Course", course_uuid, version_uuid)
-                
-                course_details = GetAPI("courses/" + course_uuid + "/versions/" + version_uuid)
-
-                #Skip course if it is block mode study (sessioonõpe)
-                if course_details['target']['study_type']['code'] == "openuniv":
-                    continue
-
-                #Skip course if not bachelor's. If no level specified, allow lecture by default
-                if not IsAllowedStudyLevel(course_details):
-                    continue
-
-                #Get relevant info (registered count, url of timetable, human-readable course label)
-                try:
-                    course_info = GetAPI("registrations/courses/" + version_uuid)
-                except requests.exceptions.HTTPError:
-                    #Skip course if unable to get registration data
-                    print("ERROR: Missing registration data!")
-                    continue
-                registered_count = course_info['restrictions']['registered_students']
-                group_count = len(course_info['groups']) if 'groups' in course_info else 0
-                plan_url = '=HYPERLINK("https://ois2.ut.ee/#/timetable/course/' + course_uuid + '/' + version_uuid + '","Timetable")'
-                course_url = '=HYPERLINK("https://ois2.ut.ee/#/courses/' + course_uuid + '/version/' + version_uuid + '/details","Course")'
-                course_id = course_info['course']['code']
-                course_name = course_details['title']['et']
-
-                #Find lectures at suitable times for a lecture bash
-                for lecture in course['events']:
-                    lecture_uuid = lecture['uuid']
-                    print_debug("Lecture", lecture_uuid)
-
-                    if 'weekday' not in lecture['time'] or 'begin_time' not in lecture['time'] :
-                        print("ERROR: Malformed lecture times!")
-                        continue
-
-                    #Ignore exams and practical lessons
-                    if not IsAllowedLectureType(lecture):
-                        continue
-                    
-                    day = int(lecture['time']['weekday']['code'])
-                    start_time = TimeToFloat(lecture['time']['begin_time'])
-                    #if IsAllowedLocation(lecture['location'].get('address', "")):
-                    #    IncrementDict(lecture_times, lecture['time']['begin_time']) #Store lecture time for common lecture time statistical purposes
-                    for week in GetAcademicWeeks(lecture['time']['academic_weeks']):
-                        lecture_week_uuid = lecture_uuid + "_" + str(week)
-                        if lecture_week_uuid not in lectures:
-                            availables = GetAvailablePeople(week, day, start_time, 0) # -1/12 for 5 minutes before lecture, 0.25 for 15 minutes total (5 before start, 10 minutes during lecture)
-                            if len(availables) >= 2:
-                                if IsAllowedLocation(lecture['location'].get('address', "")):
-                                    print("Found matching lecture", "\t\t\tWeek " + str(week), "\t" + course_id)
-                                    lectures[lecture_week_uuid] = [course_details['target']['course_main_structural_unit']['code'], course_id, lecture['study_work_type']['et'], course_name, ", ".join(availables), str(registered_count), str(group_count) if group_count > 0 else "-", str(week), str(day), lecture['time']['begin_time'][:-3], lecture['location'].get('address', "-"), course_url, plan_url, timetable_url]
-                        else:
-                            lectures[lecture_week_uuid].append(timetable_url)
+        await asyncio.wait([ProcessTimetable(timetable, i + offset) for offset, timetable in enumerate(search)])
 
     processing_end_time = datetime.datetime.utcnow()
     print("")
-    print("Plans processed in " + str(round((processing_end_time - processing_start_time).total_seconds() / 60, 2)) + " minutes")
+    print("Plans processed in " + str(round((processing_end_time - processing_start_time).total_seconds(), 1)) + " seconds")
     is_finished = True
 
-ProcessPlans()
-
-with open('continue_data.json', mode='w') as json_file_out:
-    json.dump(lectures, json_file_out)
-    print("Written continue data to continue_data.json")
+loop = asyncio.get_event_loop()
+loop.run_until_complete(ProcessPlans())
+loop.close()
 
 #with open('lecture_out.csv', mode='w', newline='', encoding='utf-8') as csv_file_out:
     #csv_writer = csv.writer(csv_file_out, delimiter='\t', quotechar='"', quoting=csv.QUOTE_MINIMAL)
@@ -256,20 +235,12 @@ with open('continue_data.json', mode='w') as json_file_out:
 
     #print("Output generated as lecture_out.csv")
 
-lectures.pop('[LAST]', None)
 lectures_out = list(lectures.values())
 sheet.values().clear(spreadsheetId=lectures_sheet_id, range=lectures_range).execute()
 sheet.values().update(spreadsheetId=lectures_sheet_id, range=lectures_range, body={'values': lectures_out}, valueInputOption='USER_ENTERED').execute()
 
 print("Output to 'UT Lectures Data' spreadsheet")
 
-if is_finished:
-    try:
-        os.remove('continue_data.json')
-        print("Processing finished. Removed continue data")
-    except FileNotFoundError:
-        print("Processing finished. No continue data stored")
-
-#for time in sorted(lecture_times):
-#    print(time + "\t" + str(lecture_times[time]))
+for time, count in sorted(lecture_times.items(), key=operator.itemgetter(1), reverse=True):
+    print(time + "\t" + str(count))
 
