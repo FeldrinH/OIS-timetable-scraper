@@ -18,10 +18,10 @@ available_times = {}
 blacklisted_lecture_types = {'exam', 'resit', 'test', 'practice', 'e-learning'}
 blacklisted_locations = {'tallinn', 'narva', 'pärnu'}
 
-lectures_sheet_id = '1dT6zjPy2Pq8xLGfW8b3jdVgoOQZO-BLNWRd1qdOczCA' #Id of spreadsheet for available times and found lectures
-lectures_range = "'Found lectures'!A2:AL"
+lectures_sheet_id = '1dT6zjPy2Pq8xLGfW8b3jdVgoOQZO-BLNWRd1qdOczCA' # Id of spreadsheet for available times and found lectures
+lectures_range = "'Found lectures'!A2:AL" # Range to output data to (might fail if range does not exist)
 times_sheet_id = lectures_sheet_id
-times_range = "'Free times'!1:150" #"'Free times'!1:100"
+times_range = "'Free times'!1:150" # Range to take free time data from. See previous years for reference of format
 
 session = requests #requests_cache.CachedSession("ois_cache", allowable_methods=('GET', 'POST'))
 
@@ -31,8 +31,9 @@ def print_debug(*args):
     if debug_enabled:
         print(*args)
 
+# The semester to search. academic_year is the year the academic year starts in, for example "2019" for 2019/2020. semester is either "spring" or "autumn"
 def SearchPayload(start, take):
-    return {"filter":{"academic_year":"2019","semester":"autumn","timetable_type":"1"},"start":start,"take":take}
+    return {"filter":{"academic_year":"2019","semester":"spring","timetable_type":"1"},"start":start,"take":take}
 
 async def GetAPI(url):
     r = await loop.run_in_executor(None, session.get, "https://ois2.ut.ee/api/" + url)
