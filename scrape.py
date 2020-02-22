@@ -130,7 +130,7 @@ for i in range(0, len(times_table)):
                 try:
                     schedule_day[times_table[i][person_id]] = ParseTimeRanges(times_table[i+day][person_id] if len(times_table[i+day]) > person_id else "")
                 except:
-                    raise RuntimeError('Malformed time: ' + times_table[i+day][person_id])
+                    raise RuntimeError('Malformed time: ' + times_table[i+day][person_id]) from None
             available_times[week][day] = schedule_day
 
 #print(available_times)
