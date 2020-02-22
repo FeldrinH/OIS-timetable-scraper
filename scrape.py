@@ -27,9 +27,12 @@ session = requests #requests_cache.CachedSession("ois_cache", allowable_methods=
 
 #Enable or disable debug info printing (disabling improves performance)
 debug_enabled = False
-def print_debug(*args):
-    if debug_enabled:
+if debug_enabled:
+    def print_debug(*args):
         print(*args)
+else:
+    def print_debug(*args):
+        pass
 
 # The semester to search. academic_year is the year the academic year starts in, for example "2019" for 2019/2020. semester is either "spring" or "autumn"
 def SearchPayload(start, take):
@@ -49,6 +52,8 @@ def PostAPI(url, payload):
 
 def TimeToFloat(time_string):
     time_parts = time_string.split(":")
+    #if len(time_parts) == 1:
+    #    time_parts = time_string.split(".")
     return float(time_parts[0]) + float(time_parts[1]) / 60
 
 def IncrementDict(dictionary, key):
@@ -122,7 +127,10 @@ for i in range(0, len(times_table)):
         for day in range(1,6):
             schedule_day = {}
             for person_id in range(1,len(times_table[i])):
-                schedule_day[times_table[i][person_id]] = ParseTimeRanges(times_table[i+day][person_id] if len(times_table[i+day]) > person_id else "")
+                try:
+                    schedule_day[times_table[i][person_id]] = ParseTimeRanges(times_table[i+day][person_id] if len(times_table[i+day]) > person_id else "")
+                except:
+                    raise RuntimeError('Malformed time: ' + times_table[i+day][person_id])
             available_times[week][day] = schedule_day
 
 #print(available_times)
@@ -157,6 +165,10 @@ async def ProcessCourse(course, timetable_url):
             return
         else:
             raise httperror
+    except json.decoder.JSONDecodeError as jsonerror:
+        print("ERROR: Missing/malformed registration data!")
+        return
+        
     registered_count = course_info['restrictions']['registered_students']
     group_count = len(course_info['groups']) if 'groups' in course_info else 0
     plan_url = '=HYPERLINK("https://ois2.ut.ee/#/timetable/course/' + course_uuid + '/' + version_uuid + '","Timetable")'
@@ -211,9 +223,12 @@ async def ProcessPlans():
 
     chunk_size = 50
     #Load timetables in chunks of 50. Should be <500 timetables total
-    for i in range(1,500,chunk_size):
+    for i in range(1,700,chunk_size):
         print("Block search:", i, i+chunk_size-1)
         search = PostAPI("timetable", SearchPayload(i, chunk_size))
+        if len(search) == 0:
+            print("Empty block")
+            continue
         await asyncio.wait([ProcessTimetable(timetable, i + offset) for offset, timetable in enumerate(search)])
 
     processing_end_time = datetime.datetime.utcnow()
